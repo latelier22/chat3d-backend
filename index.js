@@ -7,9 +7,11 @@ import fs from "fs"; // Importation du module fs classique
 import { promises as fsPromises } from "fs"; // Importation de fs/promises pour les autres opérations
 import OpenAI from "openai";
 import axios from "axios";
-
+import querystring from 'querystring';
 import crypto from 'crypto';
 import path from 'path';
+
+dotenv.config();
 
 // Fonction pour générer un nom de fichier unique basé sur un hash de l'URL
 function generateUniqueFileName(url) {
@@ -19,9 +21,6 @@ function generateUniqueFileName(url) {
 }
 
 // Assurez-vous que l'application Express sert le dossier public
-
-
-dotenv.config();
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY || "-",
@@ -34,7 +33,6 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 const port = process.env.PORT || 3000;
-
 
 const __dirname = path.resolve(); // Si vous utilisez des modules ESM
 app.use(express.static(path.join(__dirname, 'public')));
@@ -210,6 +208,69 @@ app.post("/image", async (req, res) => {
     res.status(500).send({ error: "Failed to generate image" });
   }
 });
+
+// Endpoint Google Search
+// ... autres importations
+
+
+app.post("/googleSearch", async (req, res) => {
+  const { searchTerm, page = 1 } = req.body;
+  const apiKey = process.env.GOOGLE_API_KEY;
+  const cx = process.env.GOOGLE_CX;
+  
+  if (!searchTerm || !apiKey || !cx) {
+    return res.status(400).send({ error: "Search term, API key, and CX are required" });
+  }
+
+  const startIndex = (page - 1) * 10 + 1;
+
+  const params = {
+    q: searchTerm,
+    cx,
+    searchType: 'image',
+    key: apiKey,
+    start: startIndex,
+  };
+
+  const url = `https://customsearch.googleapis.com/customsearch/v1?${querystring.stringify(params)}`;
+
+  try {
+    const response = await axios.get(url);
+    const imageUrls = response.data.items.map(item => item.link);
+    const totalResults = parseInt(response.data.searchInformation.totalResults, 10);
+    const totalPages = Math.ceil(totalResults / 10);
+
+    res.send({ imageUrls, totalPages });
+  } catch (error) {
+    console.error("Error fetching images:", error);
+    res.status(500).send({ error: "Failed to fetch images" });
+  }
+});
+
+
+app.post("/downloadImage", async (req, res) => {
+  const imageUrl = req.body.imageUrl;
+
+  if (!imageUrl) {
+    return res.status(400).send({ error: "Image URL is required" });
+  }
+
+  try {
+    const uniqueFileName = generateUniqueFileName(imageUrl);
+    const localFilePath = `./public/textures/${uniqueFileName}`;
+
+    // Télécharger l'image et l'enregistrer localement
+    await downloadImage(imageUrl, localFilePath);
+    console.log('Image downloaded successfully ',imageUrl);
+
+    res.send({ imagePath: `/textures/${uniqueFileName}` });  // Retourne le chemin de l'image stockée localement
+  } catch (error) {
+    console.error("Error downloading image:", error);
+    res.status(500).send({ error: "Failed to download image" });
+  }
+});
+
+
 
 app.listen(port, () => {
   console.log(`Virtual Girlfriend listening on port ${port}`);

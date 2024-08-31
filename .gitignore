@@ -2,3 +2,5 @@
 node_modules
 bin
 audios/message_*
+
+public/textures
