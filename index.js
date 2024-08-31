@@ -3,23 +3,41 @@ import cors from "cors";
 import dotenv from "dotenv";
 import voice from "elevenlabs-node";
 import express from "express";
-import { promises as fs } from "fs";
+import fs from "fs"; // Importation du module fs classique
+import { promises as fsPromises } from "fs"; // Importation de fs/promises pour les autres opérations
 import OpenAI from "openai";
+import axios from "axios";
+
+import crypto from 'crypto';
+import path from 'path';
+
+// Fonction pour générer un nom de fichier unique basé sur un hash de l'URL
+function generateUniqueFileName(url) {
+  const hash = crypto.createHash('md5').update(url).digest('hex');
+  const ext = path.extname(url).split('?')[0]; // Extraire l'extension de fichier
+  return `${hash}.png`;
+}
+
+// Assurez-vous que l'application Express sert le dossier public
+
+
 dotenv.config();
 
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY || "-", // Your OpenAI API key here, I used "-" to avoid errors when the key is not set but you should not do that
+  apiKey: process.env.OPENAI_API_KEY || "-",
 });
 
 const elevenLabsApiKey = process.env.ELEVEN_LABS_API_KEY;
 const voiceID = "EXAVITQu4vr4xnSDxMaL";
-// const voiceID = "a5n9pJUnAhX4fn7lx3uo";
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 const port = process.env.PORT || 3000;
 
+
+const __dirname = path.resolve(); // Si vous utilisez des modules ESM
+app.use(express.static(path.join(__dirname, 'public')));
 
 app.get("/", (req, res) => {
   res.send("Hello World!");
@@ -43,13 +61,11 @@ const lipSyncMessage = async (message) => {
   console.log(`Starting conversion for message ${message}`);
   await execCommand(
     `ffmpeg -y -i audios/message_${message}.mp3 audios/message_${message}.wav`
-    // -y to overwrite the file
   );
   console.log(`Conversion done in ${new Date().getTime() - time}ms`);
   await execCommand(
     `/usr/local/bin/rhubarb -f json -o audios/message_${message}.json audios/message_${message}.wav -r phonetic`
   );
-  // -r phonetic is faster but less accurate
   console.log(`Lip sync done in ${new Date().getTime() - time}ms`);
 };
 
@@ -102,9 +118,6 @@ app.post("/chat", async (req, res) => {
     model: "gpt-3.5-turbo-1106",
     max_tokens: 1000,
     temperature: 0.6,
-    response_format: {
-      type: "json_object",
-    },
     messages: [
       {
         role: "system",
@@ -122,17 +135,16 @@ app.post("/chat", async (req, res) => {
       },
     ],
   });
+
   let messages = JSON.parse(completion.choices[0].message.content);
   if (messages.messages) {
-    messages = messages.messages; // ChatGPT is not 100% reliable, sometimes it directly returns an array and sometimes a JSON object with a messages property
+    messages = messages.messages;
   }
   for (let i = 0; i < messages.length; i++) {
     const message = messages[i];
-    // generate audio file
-    const fileName = `audios/message_${i}.mp3`; // The name of your audio file
-    const textInput = message.text; // The text you wish to convert to speech
+    const fileName = `audios/message_${i}.mp3`;
+    const textInput = message.text;
     await voice.textToSpeech(elevenLabsApiKey, voiceID, fileName, textInput);
-    // generate lipsync
     await lipSyncMessage(i);
     message.audio = await audioFileToBase64(fileName);
     message.lipsync = await readJsonTranscript(`audios/message_${i}.json`);
@@ -142,14 +154,62 @@ app.post("/chat", async (req, res) => {
 });
 
 const readJsonTranscript = async (file) => {
-  const data = await fs.readFile(file, "utf8");
+  const data = await fsPromises.readFile(file, "utf8");
   return JSON.parse(data);
 };
 
 const audioFileToBase64 = async (file) => {
-  const data = await fs.readFile(file);
+  const data = await fsPromises.readFile(file);
   return data.toString("base64");
 };
+
+// Fonction pour télécharger l'image et la sauvegarder localement
+const downloadImage = async (url, filepath) => {
+  const response = await axios({
+    url,
+    responseType: 'stream',
+  });
+
+  return new Promise((resolve, reject) => {
+    response.data
+      .pipe(fs.createWriteStream(filepath))
+      .on('finish', () => resolve())
+      .on('error', e => reject(e));
+  });
+};
+
+app.post("/image", async (req, res) => {
+  const description = req.body.description;
+
+  if (!description) {
+    return res.status(400).send({ error: "Description is required" });
+  }
+
+  try {
+    // Génération de l'image avec OpenAI
+    const response = await openai.images.generate({
+      model: "dall-e-3",
+      prompt: description,
+      n: 1,
+      size: "1024x1024",
+    });
+
+    const imageUrl = response.data[0].url;
+    
+    // Générer un nom de fichier unique
+    const uniqueFileName = generateUniqueFileName(imageUrl);
+    const localFilePath = `./public/textures/${uniqueFileName}`; // Chemin local pour enregistrer l'image
+
+    // Télécharger l'image et l'enregistrer localement
+    await downloadImage(imageUrl, localFilePath);
+    console.log('Image downloaded successfully');
+
+    res.send({ imagePath: `/textures/${uniqueFileName}` });  // Renvoi du chemin local de l'image au client
+  } catch (error) {
+    console.error("Error generating image:", error);
+    res.status(500).send({ error: "Failed to generate image" });
+  }
+});
 
 app.listen(port, () => {
   console.log(`Virtual Girlfriend listening on port ${port}`);
